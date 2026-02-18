@@ -1,0 +1,27 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Document {
+  id        String   @id @default(cuid())
+  title     String
+  content   String
+  source    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ToolCallLog {
+  id          String   @id @default(cuid())
+  toolName    String
+  input       String
+  output      String?
+  success     Boolean  @default(true)
+  error       String?
+  createdAt   DateTime @default(now())
+}
