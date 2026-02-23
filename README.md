@@ -58,7 +58,7 @@ In NestJS, each of these tools will typically map to:
 
 - **Backend Framework**: NestJS (Node.js enterprise framework).
 - **AI Orchestration**: `LangChain.js` and `LangGraph`.
-- **LLM Provider**: Google Gemini 1.5 (Flash / Pro).
+- **LLM Provider**: OpenRouter (DeepSeek-R1; free-tier friendly).
 - **Database**: PostgreSQL with `pgvector` extension.
 - **ORM**: Prisma or TypeORM (to be finalized).
 - **API Documentation**: Swagger / OpenAPI.
@@ -96,6 +96,32 @@ graph TD
 
 ---
 
+## Why use two models (OpenRouter + Ollama)?
+
+This project is designed to work well with a **hybrid RAG setup** that combines:
+
+- **Ollama (local) for embeddings**: run a local embedding model such as `mxbai-embed-large` to convert your PDF or knowledge-base text into vectors. This keeps the **indexing/search side**:
+  - free to run,
+  - private (data stays on your machine),
+  - not dependent on a fast internet connection.
+
+- **OpenRouter (cloud) for the LLM**: use a hosted chat model such as **DeepSeek-R1 (free tier via OpenRouter)** as the "brain" of the agent. Large LLMs need significant RAM/GPU; delegating them to OpenRouter keeps your app lightweight while still giving you strong reasoning and generation quality.
+
+You still need an **OpenRouter API key** because:
+
+- It provides **unified access** to many models (OpenAI, Anthropic, DeepSeek, etc.).
+- It lets you use **free models like DeepSeek-R1** without adding a credit card with each vendor.
+- It allows OpenRouter to **authenticate, rate limit, and secure** requests, even for free usage.
+
+In short:
+
+- **Local (Ollama)** handles the heavy lifting of **reading and storing** your PDFs (embeddings).
+- **Cloud (OpenRouter + DeepSeek-R1)** handles the **answering and reasoning** over those embeddings.
+
+Together, you get a system that can process large documents locally for free, while using a high-quality cloud model to chat with that data.
+
+---
+
 ## Getting Started (Planned Setup)
 
 > The exact commands may change as the NestJS project is implemented, but this is the intended baseline flow.
@@ -104,7 +130,7 @@ graph TD
 
 - **Node.js** `v18+`
 - **PostgreSQL** with the **`pgvector`** extension enabled
-- **Google Gemini API key**
+- **OpenRouter API key** (for DeepSeek-R1, e.g. `deepseek-r1:free`)
 
 ### 2. Installation
 
@@ -122,7 +148,9 @@ npm run start:dev
 The actual variables will be defined when the NestJS app is scaffolded, but will likely include:
 
 - `DATABASE_URL`
-- `GEMINI_API_KEY`
+- `OPENROUTER_API_KEY` – your OpenRouter key.
+- `OPENROUTER_MODEL` – e.g. `deepseek-r1:free`.
+- `OPENROUTER_BASE_URL` – usually `https://openrouter.ai/api/v1`.
 - `VECTOR_COLLECTION_NAME`
 - `PORT`
 
@@ -149,104 +177,51 @@ Expected behavior:
 
 ---
 
-## Roadmap
+## Roadmap: Building a RAG Chatbot with NestJS, LangChain, and Ollama (MVP)
 
-Planned next steps for turning this design into a full NestJS project:
+For the **first MVP and test/experimental phase**, this existing NestJS project will be extended as follows:
 
-1. **Initialize NestJS project** with a modular architecture (`AgentModule`, `RagModule`, `ToolsModule`, etc.).
-2. **Integrate database layer** with PostgreSQL and `pgvector` (Prisma or TypeORM).
-3. **Implement RAG service** for ingestion, chunking, and retrieval.
-4. **Implement tools layer** (inventory, tickets, calendar) with proper authentication and error handling.
-5. **Wire up LangChain / LangGraph flows** to orchestrate ReAct-style reasoning and tool calls.
-6. **Expose HTTP APIs** (e.g. `/agent/chat`) with Swagger documentation.
-7. **Add monitoring, logging, and basic analytics** for queries and tool usage.
+1. **Environment Setup & Dependencies**
+   - Install core dependencies:
+     - `langchain`, `@langchain/core`, `@langchain/community`
+     - `@langchain/ollama` (for local embeddings)
+     - `@langchain/openai` (for LLM integration via OpenRouter)
+     - `pdf-parse` (to read PDF files).
 
-This README is organized to guide that implementation step by step once you are ready to build the NestJS project.
+2. **Local Infrastructure Setup**
+   - Install **Ollama**: download and install Ollama for local model hosting.
+   - Pull embedding model: `ollama pull mxbai-embed-large`.
+   - Configure **OpenRouter**: generate an API key from OpenRouter to access LLMs like **DeepSeek R1** without high local hardware requirements.
 
-🚀 AI Knowledge & Operations Agent (Agentic RAG)
-A Production-Ready Intelligence Layer for Modern Business Automation.
+3. **Core Module Development**
+   - Ensure `ChatModule`, `ChatController`, and `ChatService` exist (generate them if needed).
+   - Configuration: set up `ConfigModule` to securely handle API keys and local URLs.
+   - Initialization: use `onModuleInit` to pre-configure:
+     - the LLM,
+     - embeddings,
+     - and the vector store (`MemoryVectorStore`),
+     so they are ready at startup.
 
-🎯 The Vision
-Modern companies are drowning in unstructured data (PDFs, docs, chat logs). Traditional search fails because it looks for words, not meaning. This system isn't just a chatbot—it's an Agentic AI that can:
+4. **Data Ingestion Pipeline**
+   - Raw text ingestion: create a DTO and service method to accept raw JSON text and convert it into LangChain `Document` objects.
+   - PDF processing: implement a `PDFLoader`-style helper to extract text and page numbers from files.
+   - Text splitting: use `RecursiveCharacterTextSplitter` with chunk size `1000` and overlap `150` to maintain context.
+   - Vector storage: add the split chunks into a `MemoryVectorStore` using local Ollama embeddings.
 
-Reason over your private documentation (RAG).
+5. **Dynamic File Uploads**
+   - Multer integration: use NestJS `FilesInterceptor` to handle multipart form-data uploads.
+   - Storage configuration: save files to a local `./uploads` directory with unique timestamps.
+   - File filtering: implement logic to strictly allow only PDF files for ingestion.
 
-Act on your behalf by calling internal APIs (Inventory, Tickets, CRM).
+6. **Retrieval-Augmented Generation (RAG) Querying**
+   - Retriever setup: configure the vector store to retrieve the top **4** most relevant document chunks for any user question.
+   - System prompting: design a "context-aware" prompt that instructs the LLM to only answer based on provided data to prevent hallucinations.
+   - RAG chain: combine the retriever, prompt template, and LLM using `createStuffDocumentsChain` (or equivalent).
+   - Source attribution: map the metadata of retrieved chunks to return a list of sources (e.g., filenames) with every answer.
 
-Correct itself to prevent hallucinations.
+7. **Testing & API Endpoints**
+   - `POST /chat/ingest`: for manual text and local file paths.
+   - `POST /chat/upload`: for dynamic PDF uploads.
+   - `POST /chat/ask`: to query the chatbot with a question and get an answer plus sources.
 
-🧠 Core Architecture
-This project implements the "Reason-Act" (ReAct) pattern. Instead of a linear flow, the AI acts as an Orchestrator.
-
-1. Advanced RAG Pipeline
-Vector Engine: Powered by pgvector for high-performance semantic retrieval.
-
-Smart Chunking: 1000-token recursive splitting with overlap to maintain context.
-
-Hybrid Search: Combines vector similarity with SQL metadata filtering for pin-point accuracy.
-
-2. Agentic Tool System
-The Agent doesn't just talk; it uses Tools to bridge the gap between AI and your Business Data:
-
-check_inventory(): Fetches live stock levels from SQL.
-
-create_support_ticket(): Automatically generates a Jira/Database ticket from a user issue.
-
-book_product_demo(): Schedules entries into the company calendar.
-
-🏗️ Tech Stack
-Core: NestJS (Node.js Enterprise Framework)
-
-AI Orchestration: LangChain.js & LangGraph
-
-Intelligence: Google Gemini 1.5 Flash / Pro
-
-Database: PostgreSQL with pgvector extension
-
-ORM: Prisma / TypeORM
-
-Documentation: Swagger / OpenAPI
-
-🔁 Data Flow
-Code snippet
-
-graph TD
-    A[User Query] --> B{AI Router}
-    B -- Needs Knowledge --> C[RAG Service: pgvector Search]
-    B -- Needs Action --> D[Tool Service: SQL/API Call]
-    C --> E[Context Synthesis]
-    D --> E
-    E --> F[Self-Correction/Guardrails]
-    F --> G[Structured Response]
-📈 Business Value
-Reduce Support Costs: Deflect up to 60% of repetitive tickets.
-
-24/7 Sales Support: Instantly recommend products based on user intent, not just keywords.
-
-Zero-Entry Onboarding: Allow new employees/customers to query your entire handbook instantly.
-
-🛠️ Getting Started
-1. Prerequisites
-Node.js v18+
-
-PostgreSQL with pgvector enabled
-
-Google Gemini API Key
-
-2. Installation
-Bash
-
-npm install
-cp .env.example .env
-npx prisma migrate dev
-npm run start:dev
-3. API Usage
-Ask the Agent:
-
-Bash
-
-POST /agent/chat
-{
-  "message": "I need a warm jacket for a ski trip, what's in stock?"
-}
-The agent will search the vector DB for 'warm jacket', then use the checkStock tool to verify availability before answering.
+This is the **explicit MVP roadmap** we will implement first; later phases can evolve it into the larger Agentic RAG architecture described above.
