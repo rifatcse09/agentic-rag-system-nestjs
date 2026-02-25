@@ -1,0 +1,15 @@
+info:
+  name: Uploads
+  type: http
+  seq: 3
+
+http:
+  method: POST
+  url: http://localhost:3000/chat/upload
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
