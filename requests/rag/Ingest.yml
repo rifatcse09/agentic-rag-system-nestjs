@@ -4,8 +4,45 @@ info:
   seq: 1
 
 http:
-  method: GET
+  method: POST
   url: http://localhost:3000/chat/ingest
+  body:
+    type: json
+    data: |-
+      {
+        "docs": [
+          {
+            "content": "Invoice 189012: Order #ORD-1001 for customer John Doe. 2x 'Wireless Headphones', shipped via FastExpress. Tracking ID: FX-123456789.",
+            "meta": {
+              "source": "invoices-system",
+              "category": "invoice",
+              "orderId": "ORD-1001",
+              "invoiceNumber": "189012",
+              "carrier": "FastExpress",
+              "trackingId": "FX-123456789"
+            }
+          },
+          {
+            "content": "Invoice 189013: Order #ORD-1002 for customer Jane Smith. 1x 'Gaming Mouse', shipped via QuickShip. Tracking ID: QS-987654321.",
+            "meta": {
+              "source": "invoices-system",
+              "category": "invoice",
+              "orderId": "ORD-1002",
+              "invoiceNumber": "189013",
+              "carrier": "QuickShip",
+              "trackingId": "QS-987654321"
+            }
+          },
+          {
+            "content": "Our parcel delivery policy: standard shipping takes 3–5 business days, express shipping takes 1–2 business days. Customers can track parcels using their tracking ID on the carrier's website.",
+            "meta": {
+              "source": "shipping-policy",
+              "category": "policy",
+              "type": "delivery"
+            }
+          }
+        ]
+      }
   auth: inherit
 
 settings:

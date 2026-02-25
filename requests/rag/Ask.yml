@@ -6,6 +6,12 @@ info:
 http:
   method: POST
   url: http://localhost:3000/chat/ask
+  body:
+    type: json
+    data: |-
+      {
+        "question": "Need to info about orderId #ORD-1001 tracking id what"
+      }
   auth: inherit
 
 settings:

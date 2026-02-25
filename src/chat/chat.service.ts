@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { ChatOpenAI } from '@langchain/openai';
 import { ConfigService } from '@nestjs/config';
-import { OllamaEmbeddings } from '@langchain/ollama';
+import { ChatOllama, OllamaEmbeddings } from '@langchain/ollama';
 import { MemoryVectorStore } from 'langchain/vectorstores/memory';
 import { IngestBodyDto } from './dto/ingest.dto';
 import { Document } from '@langchain/core/documents';
@@ -14,7 +13,7 @@ import { resolve } from 'path';
 
 @Injectable()
 export class ChatService {
-  private llm!: ChatOpenAI;
+  private llm!: ChatOllama;
   private embeddings!: OllamaEmbeddings;
   private vectorStore!: MemoryVectorStore;
 
@@ -27,19 +26,26 @@ export class ChatService {
   }
 
   async init(): Promise<void> {
-    //llm
-    this.llm = new ChatOpenAI({
-      model: 'deepseek/deepseek-r1',
-      apiKey: this.configService.get<string>('OPENROUTER_API_KEY'),
-      configuration: { baseURL: 'https://openrouter.ai/api/v1' },
+    // LLM via Ollama (local). Ensure: 1) Ollama is running (e.g. ollama serve).
+    // 2) Model is pulled: ollama pull llama3.2:3b (or ollama list to see names).
+    const ollamaBaseUrl =
+      this.configService.get<string>('OLLAMA_BASE_URL') ?? 'http://localhost:11434';
+    const chatModel =
+      this.configService.get<string>('CHAT_OLLAMA_MODEL') ?? 'llama3.2:3b';
+    this.llm = new ChatOllama({
+      model: chatModel,
+      baseUrl: ollamaBaseUrl,
       temperature: 0,
     });
 
 
-    //embeddings via ollama
+    //embeddings via ollama (share same baseUrl; model overridable via env)
+    const embeddingsModel =
+      this.configService.get<string>('EMBEDDINGS_OLLAMA_MODEL') ??
+      'mxbai-embed-large';
     this.embeddings = new OllamaEmbeddings({
-      model: 'mxbai-embed-large',
-      baseUrl: 'http://localhost:11434',
+      model: embeddingsModel,
+      baseUrl: ollamaBaseUrl,
     });
 
     //vector store
@@ -128,20 +134,19 @@ export class ChatService {
     }
 
     // --- Retriever setup ---
-    // Turn the vector store into a retriever: k=4 fetches the 4 most similar chunks;
-    // similarity search finds chunks whose embeddings are closest to the question embedding.
+    // Fetch more chunks (k=8) so broad questions like "Who is X?" get the right passage; was k=4.
+    const retrievalK = this.configService.get<number>('RAG_RETRIEVAL_K') ?? 8;
     const retriever = this.vectorStore.asRetriever({
-      k: 4,
+      k: retrievalK,
       searchType: 'similarity',
     });
 
     // --- RAG prompt ---
-    // System message constrains the LLM to answer only from context (reduces hallucination).
-    // Human template injects the user question and the retrieved context for the model to read.
+    // Answer based only on the retrieved context, but allow reasonable summarization/inference from it.
     const prompt = ChatPromptTemplate.fromMessages([
       [
         'system',
-        'Answer strictly from the provided context. If unknown, say you dont know',
+        "Answer strictly from the provided context. If unknown, say you dont know",
       ],
       ['human', 'Question:\n{question}\n\nContext:\n{context}'],
     ]);

@@ -6,6 +6,21 @@ info:
 http:
   method: POST
   url: http://localhost:3000/chat/upload
+  params:
+    - name: ""
+      value: ""
+      type: query
+  body:
+    type: multipart-form
+    data:
+      - name: files
+        type: file
+        value:
+          - /Users/rifat/Downloads/CV/Rifat_exp_8+_Senior_Software_Engineer_Fullstack.pdf
+      - name: files
+        type: file
+        value:
+          - /Users/rifat/Downloads/ATSCV.pdf
   auth: inherit
 
 settings:
