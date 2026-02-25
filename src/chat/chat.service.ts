@@ -10,6 +10,7 @@ import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { createStuffDocumentsChain } from 'langchain/chains/combine_documents';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
+import { resolve } from 'path';
 
 @Injectable()
 export class ChatService {
@@ -17,7 +18,13 @@ export class ChatService {
   private embeddings!: OllamaEmbeddings;
   private vectorStore!: MemoryVectorStore;
 
-  constructor(private readonly configService: ConfigService) { };
+  constructor(private readonly configService: ConfigService) { }
+
+  /** Ensures LLM, embeddings, and vector store are initialized (e.g. before first ingest/query). */
+  private async ensureInit(): Promise<void> {
+    if (this.vectorStore != null) return;
+    await this.init();
+  }
 
   async init(): Promise<void> {
     //llm
@@ -40,6 +47,8 @@ export class ChatService {
   }
 
   async ingest(body: IngestBodyDto) {
+    await this.ensureInit();
+
     const textDocs: Document[] = (body.docs || []).map(
       (d) =>
         new Document({
@@ -90,7 +99,7 @@ export class ChatService {
       };
     }
 
-    const filePaths = files.map((file) => file.path);
+    const filePaths = files.map((file) => resolve(file.path));
 
     const result = await this.ingest({ pdfPaths: filePaths });
 
@@ -100,7 +109,15 @@ export class ChatService {
     };
   }
 
+  /**
+   * RAG query: retrieve relevant chunks from the vector store, then generate an answer
+   * using only that context so responses stay grounded in ingested documents.
+   */
   async query(question: string) {
+    await this.ensureInit();
+
+    // --- Input validation ---
+    // Reject empty/whitespace-only questions to avoid wasted retrieval and LLM calls.
     if (!question?.trim()) {
       return {
         success: false,
@@ -110,11 +127,17 @@ export class ChatService {
       };
     }
 
+    // --- Retriever setup ---
+    // Turn the vector store into a retriever: k=4 fetches the 4 most similar chunks;
+    // similarity search finds chunks whose embeddings are closest to the question embedding.
     const retriever = this.vectorStore.asRetriever({
       k: 4,
       searchType: 'similarity',
     });
 
+    // --- RAG prompt ---
+    // System message constrains the LLM to answer only from context (reduces hallucination).
+    // Human template injects the user question and the retrieved context for the model to read.
     const prompt = ChatPromptTemplate.fromMessages([
       [
         'system',
@@ -123,31 +146,48 @@ export class ChatService {
       ['human', 'Question:\n{question}\n\nContext:\n{context}'],
     ]);
 
+    // --- Chain assembly ---
+    // createStuffDocumentsChain "stuffs" all retrieved docs into the {context} variable
+    // and runs the LLM once. StringOutputParser gives a plain string answer instead of a message object.
     const ragChain = await createStuffDocumentsChain({
       llm: this.llm,
       prompt,
       outputParser: new StringOutputParser(),
     });
 
+    // --- Retrieve context ---
+    // Embed the question and fetch the k nearest document chunks from the vector store.
     const contextDocs = await retriever.invoke(question);
 
+    // --- No context guard ---
+    // If nothing was ingested or nothing matches, we cannot answer. MemoryVectorStore is in-memory
+    // so the index is cleared on every server restart—re-upload/re-ingest after restart.
     if (contextDocs.length === 0) {
       return {
         success: false,
-        answer: 'No indexed content yet.Please ingest document first.',
+        answer:
+          'No indexed content yet. Please ingest documents first (e.g. POST /chat/upload). ' +
+          'Note: the index is in-memory and is cleared when the server restarts.',
         sources: [],
         contextCount: 0,
       };
     }
 
+    // --- Generate answer ---
+    // Pass question and retrieved docs to the chain; the chain formats context and gets one LLM response.
     const answer = await ragChain.invoke({ question, context: contextDocs });
 
+    // --- Source attribution ---
+    // Collect unique source paths from chunk metadata (e.g. PDF filenames), dedupe with Set,
+    // and cap at 10 so the response payload stays bounded.
     const sources = Array.from(
       new Set(
         contextDocs.map((d) => d.metadata?.source).filter(Boolean) as string[],
       ),
     ).slice(0, 10);
 
+    // --- Success response ---
+    // Return the answer, list of sources used, and how many chunks were in context (for transparency).
     return {
       success: true,
       answer,
