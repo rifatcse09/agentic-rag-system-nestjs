@@ -28,6 +28,15 @@ services:
       - ollama
     restart: "no"
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: rag-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
   postgres:
     image: pgvector/pgvector:pg16
     container_name: rag-postgres
@@ -41,33 +50,42 @@ services:
       - pg_data:/var/lib/postgresql/data
     restart: unless-stopped
 
-  api:
-    build: .
-    container_name: rag-api
-    ports:
-      - "3000:3000"
-    environment:
-      # App port
-      PORT: "3000"
+  # api:
+  #   build: .
+  #   container_name: rag-api
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     # App port
+  #     PORT: "3000"
 
-      # DB (override localhost in .env for containers)
-      DATABASE_URL: "postgresql://user:password@postgres:5432/agentic_rag?schema=public"
+  #     # DB (override localhost in .env for containers)
+  #     DATABASE_URL: "postgresql://user:password@postgres:5432/agentic_rag?schema=public"
 
-      # Ollama config (override in .env for low-memory: CHAT_OLLAMA_MODEL=tinyllama)
-      OLLAMA_BASE_URL: "http://ollama:11434"
-      CHAT_OLLAMA_MODEL: "${CHAT_OLLAMA_MODEL:-llama3.2:3b}"
-      EMBEDDINGS_OLLAMA_MODEL: "${EMBEDDINGS_OLLAMA_MODEL:-mxbai-embed-large}"
-      RAG_RETRIEVAL_K: "8"
+  #     # Ollama config (override in .env for low-memory: CHAT_OLLAMA_MODEL=tinyllama)
+  #     OLLAMA_BASE_URL: "http://ollama:11434"
+  #     CHAT_OLLAMA_MODEL: "${CHAT_OLLAMA_MODEL:-llama3.2:3b}"
+  #     EMBEDDINGS_OLLAMA_MODEL: "${EMBEDDINGS_OLLAMA_MODEL:-mxbai-embed-large}"
+  #     RAG_RETRIEVAL_K: "8"
 
-      # Optional (only if still used elsewhere)
-      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
-      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+  #     # Vector DB: when set, use Qdrant; otherwise in-memory store is used as fallback
+  #     QDRANT_URL: "${QDRANT_URL:-http://qdrant:6333}"
+  #     QDRANT_COLLECTION: "${QDRANT_COLLECTION:-rag_docs}"
 
-    depends_on:
-      - ollama
-      - postgres
-    restart: unless-stopped
+  #     # App logs: LOG_PRETTY=1 for readable lines in docker compose logs; unset for JSON
+  #     LOG_PRETTY: "${LOG_PRETTY:-1}"
+
+  #     # Optional (only if still used elsewhere)
+  #     OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+  #     GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+
+  #   depends_on:
+  #     - ollama
+  #     - postgres
+  #     - qdrant
+  #   restart: unless-stopped
 
 volumes:
   ollama_data:
   pg_data:
+  qdrant_data:

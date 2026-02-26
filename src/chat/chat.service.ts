@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ChatOllama, OllamaEmbeddings } from '@langchain/ollama';
 import { MemoryVectorStore } from 'langchain/vectorstores/memory';
+import { QdrantVectorStore } from '@langchain/qdrant';
+import type { VectorStore } from '@langchain/core/vectorstores';
 import { IngestBodyDto } from './dto/ingest.dto';
 import { Document } from '@langchain/core/documents';
 import { loadPdfAsDocuments } from './helper/pdf.loader';
@@ -10,14 +12,20 @@ import { createStuffDocumentsChain } from 'langchain/chains/combine_documents';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { resolve } from 'path';
+import { AppLogger } from '../common/app-logger';
 
 @Injectable()
 export class ChatService {
+  private readonly appLog = new AppLogger(ChatService.name);
   private llm!: ChatOllama;
   private embeddings!: OllamaEmbeddings;
-  private vectorStore!: MemoryVectorStore;
+  private vectorStore!: VectorStore;
+  private vectorStoreKind: 'memory' | 'qdrant' = 'memory';
+  /** For debug: total RAG queries and successful (had context + answer). */
+  private ragQueriesTotal = 0;
+  private ragQueriesSuccess = 0;
 
-  constructor(private readonly configService: ConfigService) { }
+  constructor(private readonly configService: ConfigService) {}
 
   /** Ensures LLM, embeddings, and vector store are initialized (e.g. before first ingest/query). */
   private async ensureInit(): Promise<void> {
@@ -48,8 +56,78 @@ export class ChatService {
       baseUrl: ollamaBaseUrl,
     });
 
-    //vector store
+    // Vector store: Qdrant when QDRANT_URL is set, otherwise Memory as fallback
+    const qdrantUrl = this.configService.get<string>('QDRANT_URL');
+    const collectionName =
+      this.configService.get<string>('QDRANT_COLLECTION') ?? 'rag_docs';
+
+    if (qdrantUrl?.trim()) {
+      const url = qdrantUrl.trim();
+      const ready = await this.waitForQdrant(url);
+      if (ready) {
+        try {
+          this.vectorStore = new QdrantVectorStore(this.embeddings, {
+            url,
+            collectionName,
+          });
+          this.vectorStoreKind = 'qdrant';
+          this.appLog.log('Vector store: Qdrant (data persists across API restarts)', {
+            storage: 'qdrant',
+            url,
+            collection: collectionName,
+          });
+        } catch (err) {
+          this.useMemoryFallback(
+            err instanceof Error ? err.message : String(err),
+            'Qdrant client init failed',
+          );
+        }
+      } else {
+        this.useMemoryFallback(
+          'Qdrant did not become ready in time',
+          'Qdrant unreachable at startup',
+        );
+      }
+    } else {
+      this.vectorStore = new MemoryVectorStore(this.embeddings);
+      this.vectorStoreKind = 'memory';
+      this.appLog.warn(
+        'Vector store: Memory. Data is lost on API restart. Set QDRANT_URL for persistence.',
+        { storage: 'memory' },
+      );
+    }
+  }
+
+  /** Wait for Qdrant to be reachable (retries so API can start after Qdrant). */
+  private async waitForQdrant(baseUrl: string, maxAttempts = 5, delayMs = 2000): Promise<boolean> {
+    const url = baseUrl.replace(/\/$/, '');
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(3000) });
+        if (res.ok) return true;
+      } catch {
+        // not ready yet
+      }
+      if (attempt < maxAttempts) {
+        this.appLog.debug('Qdrant not ready, retrying...', {
+          attempt,
+          maxAttempts,
+          url,
+        });
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+    return false;
+  }
+
+  private useMemoryFallback(reason: string, logMessage: string): void {
     this.vectorStore = new MemoryVectorStore(this.embeddings);
+    this.vectorStoreKind = 'memory';
+    this.appLog.warn(logMessage, {
+      storage: 'memory',
+      error: reason,
+      hint: 'Ensure Qdrant is running (e.g. docker compose up -d qdrant). Data will be lost on API restart.',
+    });
   }
 
   async ingest(body: IngestBodyDto) {
@@ -86,6 +164,12 @@ export class ChatService {
 
     const splitDocs = await splitter.splitDocuments(allDocs);
     await this.vectorStore.addDocuments(splitDocs);
+
+    this.appLog.log('Ingest complete', {
+      storage: this.vectorStoreKind,
+      chunksAdded: splitDocs.length,
+      docsProcessed: allDocs.length,
+    });
 
     return {
       success: true,
@@ -146,9 +230,18 @@ export class ChatService {
     const prompt = ChatPromptTemplate.fromMessages([
       [
         'system',
-        "Answer strictly from the provided context. If unknown, say you dont know",
+        [
+          'You are a retrieval QA assistant answering questions about orders, invoices, and policies.',
+          'Use ONLY the provided context. Do not guess or use outside knowledge.',
+          'If the answer is explicitly stated in the context, extract it exactly (e.g. product name, quantity, carrier, tracking ID, order or invoice number).',
+          'If the question asks for details that are only partially available, answer with what is known and clearly say what is unknown.',
+          "If the answer is not present in the context at all, reply with: \"I don't know based on the provided documents.\"",
+        ].join(' '),
       ],
-      ['human', 'Question:\n{question}\n\nContext:\n{context}'],
+      [
+        'human',
+        'Question:\n{question}\n\nContext (one or more document snippets):\n{context}',
+      ],
     ]);
 
     // --- Chain assembly ---
@@ -164,15 +257,26 @@ export class ChatService {
     // Embed the question and fetch the k nearest document chunks from the vector store.
     const contextDocs = await retriever.invoke(question);
 
+    this.ragQueriesTotal += 1;
+
     // --- No context guard ---
     // If nothing was ingested or nothing matches, we cannot answer. MemoryVectorStore is in-memory
     // so the index is cleared on every server restart—re-upload/re-ingest after restart.
     if (contextDocs.length === 0) {
+      this.appLog.debug('RAG query: no context', {
+        storage: this.vectorStoreKind,
+        retrieval: 0,
+        success: false,
+        successRate: `${this.ragQueriesSuccess}/${this.ragQueriesTotal}`,
+      });
+      const note =
+        this.vectorStoreKind === 'memory'
+          ? ' Note: the index is in-memory and is cleared when the server restarts.'
+          : ' (Using Qdrant; ingest via POST /chat/upload or /chat/ingest.)';
       return {
         success: false,
         answer:
-          'No indexed content yet. Please ingest documents first (e.g. POST /chat/upload). ' +
-          'Note: the index is in-memory and is cleared when the server restarts.',
+          'No indexed content yet. Please ingest documents first (e.g. POST /chat/upload).' + note,
         sources: [],
         contextCount: 0,
       };
@@ -182,6 +286,8 @@ export class ChatService {
     // Pass question and retrieved docs to the chain; the chain formats context and gets one LLM response.
     const answer = await ragChain.invoke({ question, context: contextDocs });
 
+    this.ragQueriesSuccess += 1;
+
     // --- Source attribution ---
     // Collect unique source paths from chunk metadata (e.g. PDF filenames), dedupe with Set,
     // and cap at 10 so the response payload stays bounded.
@@ -190,6 +296,19 @@ export class ChatService {
         contextDocs.map((d) => d.metadata?.source).filter(Boolean) as string[],
       ),
     ).slice(0, 10);
+
+    // --- RAG application log (JSON to stdout for docker compose / jq) ---
+    const questionPreview = question.trim().slice(0, 80) + (question.length > 80 ? '...' : '');
+    this.appLog.log('RAG query success', {
+      storage: this.vectorStoreKind,
+      retrieval: contextDocs.length,
+      contextCount: contextDocs.length,
+      success: true,
+      answerLen: answer.length,
+      sourcesCount: sources.length,
+      successRate: `${this.ragQueriesSuccess}/${this.ragQueriesTotal}`,
+      questionPreview,
+    });
 
     // --- Success response ---
     // Return the answer, list of sources used, and how many chunks were in context (for transparency).

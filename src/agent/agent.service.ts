@@ -2,14 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { ChatRequestDto } from './dto/chat-request.dto';
 import { ChatResponseDto } from './dto/chat-response.dto';
 import { RagService } from '../rag/rag.service';
-import { ToolsService } from '../tools/tools.service';
 
 @Injectable()
 export class AgentService {
-  constructor(
-    private readonly ragService: RagService,
-    private readonly toolsService: ToolsService,
-  ) { }
+  constructor(private readonly ragService: RagService) { }
 
   /**
    * Very simplified orchestration logic:
@@ -25,13 +21,6 @@ export class AgentService {
 
     const context = await this.ragService.search(message);
 
-    const toolCalls: ChatResponseDto['toolCalls'] = [];
-
-    if (/inventory|stock|available/i.test(message)) {
-      await this.toolsService.checkInventory({ query: message });
-      toolCalls.push({ tool: 'check_inventory', success: true });
-    }
-
     const response: ChatResponseDto = {
       message:
         'This is a placeholder response from the Agent orchestrator. ' +
@@ -41,7 +30,6 @@ export class AgentService {
         id: doc.id,
         title: doc.title,
       })),
-      toolCalls,
     };
 
     return response;

@@ -29,23 +29,23 @@ This system is not just a chatbot; it is an **Agentic AI Orchestrator** that:
 At a high level the system is an **Agentic RAG backend** built on NestJS:
 
 - **Chat RAG layer** (`ChatModule`, `ChatService`):
-  - Ingests PDFs or raw text.
+  - Ingests PDFs or raw text (currently tuned for **invoice + shipping-policy** documents).
   - Splits them into chunks.
   - Embeds chunks with a local Ollama embedding model.
-  - Stores them in an in-memory vector store.
+  - Stores them in Qdrant (Docker vector DB) when configured, with an in-memory vector store as a fallback.
   - Answers questions using Retrieval-Augmented Generation (RAG).
 - **Agent layer** (`AgentModule`, `AgentService`):
   - Exposes a higher-level `/agent/chat` API that can orchestrate tools and RAG.
-- **Business tools layer**:
-  - `InventoryModule`, `SupportModule`, `CalendarModule`, `ToolsModule` wrap concrete business actions as services.
+<!-- Business tools layer (inventory/support/calendar/tools) was part of the original design but has been removed from the current MVP to keep the focus on invoice + shipping RAG. -->
 
 ### Current Implementation (MVP in this repo)
 
-The code in this repository implements an initial **MVP RAG chatbot** with:
+The code in this repository implements an initial **MVP RAG chatbot focused on invoices & parcel shipping support** with:
 
 - **NestJS** as the HTTP/API framework.
 - **LangChain.js** for:
-  - `MemoryVectorStore` (in-memory semantic search).
+  - `QdrantVectorStore` (persistent vector DB via Qdrant when `QDRANT_URL` is set).
+  - `MemoryVectorStore` as a fallback when Qdrant is not available.
   - `RecursiveCharacterTextSplitter` for chunking.
   - `createStuffDocumentsChain` for RAG.
 - **Ollama** for *both*:
@@ -57,11 +57,11 @@ Key NestJS pieces:
 - `ChatService`:
   - `init()`:
     - Creates an Ollama chat model (`ChatOllama`) and Ollama embeddings.
-    - Creates an in-memory `MemoryVectorStore`.
+    - Connects to **Qdrant** (using `QDRANT_URL`) for a persistent vector store when available; otherwise falls back to an in-memory `MemoryVectorStore`.
   - `ingest()`:
-    - Accepts raw text docs and/or PDF paths.
+    - Accepts raw text docs and/or PDF paths (for this MVP, oriented around **invoice and shipping-policy content**).
     - Uses a PDF loader and text splitter.
-    - Adds resulting chunks to the `MemoryVectorStore`.
+    - Adds resulting chunks to the active vector store (Qdrant or in-memory).
   - `handleFileUpload()`:
     - Receives uploaded PDFs.
     - Saves them under `./uploads`.
@@ -76,10 +76,10 @@ Key NestJS pieces:
   - `POST /chat/upload`: upload PDFs and ingest them.
   - `POST /chat/ask`: ask a question against the indexed content.
 
-This gives you a **working RAG chatbot** against your PDFs using only:
+This gives you a **working RAG chatbot** against your invoice / shipping PDFs and JSON docs using only:
 
 - Local Ollama models (no external LLM API required).
-- An in-memory vector store (fast feedback for development).
+- Qdrant as a persistent vector DB (via Docker), with an in-memory vector store as a fallback for development.
 
 ### Business Workflow (Today)
 
@@ -121,7 +121,9 @@ From a business / user point of view the current flow is:
 - **Backend Framework**: NestJS.
 - **AI Orchestration**: `langchain`, `@langchain/core`.
 - **LLM & Embeddings**: Ollama (`ChatOllama`, `OllamaEmbeddings`).
-- **Vector Store**: `MemoryVectorStore` (in-memory; per-process).
+- **Vector Store**:
+  - Qdrant via `@langchain/qdrant` (persistent; runs in Docker and survives API restarts).
+  - `MemoryVectorStore` as an automatic fallback when Qdrant is not reachable or `QDRANT_URL` is unset.
 - **PDF Parsing**: `pdf-parse` + LangChain PDF loader.
 - **Configuration**: `@nestjs/config` with `.env`.
 
@@ -229,8 +231,9 @@ You can run the full stack (Ollama, Postgres, and the NestJS API) with **Docker*
 |---------------|---------|
 | **ollama**    | Runs the Ollama server (HTTP on `11434`). Stores models in a volume so they persist. |
 | **ollama-pull** | One-off job: pulls models listed in `OLLAMA_PULL_MODELS` (default: `llama3.2:3b`, `mxbai-embed-large`) into the Ollama service. Run once after `ollama` is up. |
-| **postgres**  | PostgreSQL with pgvector (for future vector DB phase). Used by the API via `DATABASE_URL`. |
-| **api**       | NestJS RAG API (builds from the repo `Dockerfile`). Connects to `ollama` and `postgres` by service name. |
+| **qdrant**    | Qdrant vector database. **This is the active vector DB** used by `ChatService` for invoice / policy search when `QDRANT_URL` is set. Data is stored in the `qdrant_data` Docker volume so it survives API restarts. |
+| **postgres**  | PostgreSQL with pgvector **reserved for future phases**. Present in compose, but not required by the current invoice RAG flow. |
+| **api**       | NestJS RAG API (builds from the repo `Dockerfile`). Connects to `ollama` and `qdrant` (and `postgres` in later phases) by service name when running inside Docker. |
 
 ### Prerequisites
 
@@ -240,7 +243,7 @@ You can run the full stack (Ollama, Postgres, and the NestJS API) with **Docker*
 
 ### How to run
 
-1. **Start Ollama and Postgres (and the API):**
+1. **Start Ollama, Qdrant, Postgres, and the API (all in Docker):**
 
    ```bash
    docker compose up -d
@@ -262,6 +265,11 @@ You can run the full stack (Ollama, Postgres, and the NestJS API) with **Docker*
    - **Chat (ask):** `POST http://localhost:3000/chat/ask` — send a question, get answer + sources.
    - Ingest: `POST http://localhost:3000/chat/upload` (PDFs), `POST http://localhost:3000/chat/ingest` (text/PDF paths).
 
+In this full-Docker mode:
+
+- `api` talks to **Ollama** at `http://ollama:11434`.
+- `api` talks to **Qdrant** at `http://qdrant:6333` (via `QDRANT_URL` in `docker-compose.yml`).
+
 ### Environment variables for Docker
 
 Create a `.env` in the project root (see `.env.example`). Compose passes these into the **api** and **ollama-pull** services:
@@ -278,6 +286,46 @@ CHAT_OLLAMA_MODEL=llama3.2:3b
 EMBEDDINGS_OLLAMA_MODEL=mxbai-embed-large
 OLLAMA_PULL_MODELS=llama3.2:3b mxbai-embed-large
 ```
+
+### Dev vs production: two ways to run
+
+You can either run **everything in Docker** (prod-style), or run **only Ollama + Qdrant in Docker** and the API with pnpm on your machine.
+
+- **Option A – Full Docker (prod style)**  
+  API, Ollama, Qdrant, Postgres all run in Docker.
+
+  ```bash
+  docker compose up -d                # starts ollama, qdrant, postgres, api
+  docker compose run --rm ollama-pull # pull models into the ollama container
+  ```
+
+  In this mode:
+
+  - API → Ollama at `http://ollama:11434`
+  - API → Qdrant at `http://qdrant:6333`
+
+- **Option B – Dev: API local, Ollama + Qdrant in Docker**  
+  Docker runs only the ML/vector infra; Nest API runs locally via pnpm.
+
+  Start infra in Docker:
+
+  ```bash
+  docker compose up -d ollama qdrant
+  docker compose run --rm ollama-pull
+  ```
+
+  Run API locally:
+
+  ```bash
+  pnpm run start:dev
+  ```
+
+  In your host `.env`:
+
+  ```env
+  OLLAMA_BASE_URL=http://localhost:11434   # forwards to Docker ollama
+  QDRANT_URL=http://localhost:6333         # forwards to Docker qdrant
+  ```
 
 ### Low memory (e.g. “model requires more system memory”)
 
@@ -303,6 +351,32 @@ Or in one step:
 docker compose up --build -d
 ```
 
+### Application logs (free, no API key)
+
+RAG and vector-store events are written as **JSON lines to stdout** (no third-party services or API keys).
+
+**How to see live log updates**
+
+1. Start the stack: `docker compose up -d`
+2. In **another terminal**, follow the API logs:  
+   `docker compose logs -f api`
+3. Trigger actions that produce logs:
+   - **First request** (ingest or ask) → init runs → you’ll see a line like `"message":"Vector store: Qdrant"` or `"Vector store: Memory"`.
+   - **POST /chat/upload** or **POST /chat/ingest** → `"message":"Ingest complete"` with `chunksAdded`, `docsProcessed`.
+   - **POST /chat/ask** → `"message":"RAG query success"` or `"RAG query: no context"` with `storage`, `retrieval`, `successRate`.
+
+Use **`-f`** so logs stream; without `-f` you only see a one-time snapshot. Docker Compose mixes JSON with other output, so filter before `jq`:
+
+- **Follow API logs:**  
+  `docker compose logs -f api`
+- **Pretty-print only JSON lines:**  
+  `docker compose logs -f api 2>&1 | grep -E '^\s*\{' | jq .`
+- **Filter by storage or success:**  
+  `docker compose logs api 2>&1 | grep -E '^\s*\{' | jq 'select(.storage=="qdrant")'`  
+  `docker compose logs api 2>&1 | grep -E '^\s*\{' | jq 'select(.message=="RAG query success")'`
+
+Each JSON line includes `timestamp`, `level`, `context`, `message`, and optional fields such as `storage`, `retrieval`, `successRate`, `chunksAdded`, etc.
+
 ---
 
 ## API Endpoints (with request body examples)
@@ -311,11 +385,11 @@ Base URL: `http://localhost:3000`
 
 ---
 
-### 1. Ingest text or PDF paths (JSON)
+### 1. Ingest invoice / shipping text or PDF paths (JSON)
 
 **`POST /chat/ingest`**
 
-Add raw text and/or paths to existing PDFs into the RAG index. At least one of `docs` or `pdfPaths` must be provided.
+Add raw text and/or paths to existing PDFs into the RAG index. This MVP is tuned for **invoice and parcel-delivery policy** content. At least one of `docs` or `pdfPaths` must be provided.
 
 **Request:**
 
@@ -328,13 +402,26 @@ Content-Type: application/json
 {
   "docs": [
     {
-      "content": "Rifat is a full-stack engineer. Our refund policy allows returns within 30 days.",
-      "meta": { "source": "inline", "category": "policy" }
+      "content": "Invoice 189012: Order #ORD-1001 for customer John Doe. 2x 'Wireless Headphones', shipped via FastExpress. Tracking ID: FX-123456789.",
+      "meta": {
+        "source": "invoices-system",
+        "category": "invoice",
+        "orderId": "ORD-1001",
+        "invoiceNumber": "189012",
+        "carrier": "FastExpress",
+        "trackingId": "FX-123456789"
+      }
+    },
+    {
+      "content": "Our parcel delivery policy: standard shipping takes 3–5 business days, express shipping takes 1–2 business days. Customers can track parcels using their tracking ID on the carrier's website.",
+      "meta": {
+        "source": "shipping-policy",
+        "category": "policy",
+        "type": "delivery"
+      }
     }
   ],
-  "pdfPaths": [
-    "/absolute/path/to/document.pdf"
-  ]
+  "pdfPaths": []
 }
 ```
 
@@ -371,11 +458,11 @@ curl -X POST http://localhost:3000/chat/upload -F "files=@/path/to/file1.pdf" -F
 
 ---
 
-### 3. Ask a question (RAG chat)
+### 3. Ask a question (RAG chat over invoices & shipping)
 
 **`POST /chat/ask`**
 
-Ask a question against the indexed documents. Returns an answer plus source references.
+Ask a question against the indexed invoice / shipping documents. Returns an answer plus source references.
 
 **Request:**
 
@@ -386,7 +473,7 @@ Content-Type: application/json
 
 ```json
 {
-  "question": "Who is Rifat?"
+  "question": "What product and quantity were shipped for order ORD-1001?"
 }
 ```
 
