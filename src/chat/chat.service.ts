@@ -156,9 +156,17 @@ export class ChatService {
       };
     }
 
+    for (const doc of allDocs) {
+      this.appLog.debug('Extracted PDF text (first 500 chars)', {
+        source: doc.metadata?.source,
+        textLength: doc.pageContent.length,
+        preview: doc.pageContent.slice(0, 500),
+      });
+    }
+
     const splitter = new RecursiveCharacterTextSplitter({
-      chunkSize: 1000,
-      chunkOverlap: 150,
+      chunkSize: 500,
+      chunkOverlap: 80,
       separators: ['\n\n', '\n', ' ', ''],
     });
 
@@ -219,7 +227,7 @@ export class ChatService {
 
     // --- Retriever setup ---
     // Fetch more chunks (k=8) so broad questions like "Who is X?" get the right passage; was k=4.
-    const retrievalK = this.configService.get<number>('RAG_RETRIEVAL_K') ?? 8;
+    const retrievalK = parseInt(this.configService.get('RAG_RETRIEVAL_K') ?? '8', 10);
     const retriever = this.vectorStore.asRetriever({
       k: retrievalK,
       searchType: 'similarity',
