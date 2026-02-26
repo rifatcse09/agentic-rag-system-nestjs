@@ -133,13 +133,7 @@ From a business / user point of view the current flow is:
 
 ## High‑Level Data Flow (Current MVP)
 
-Single‑line view of what is implemented **right now**:
-
-**Ingestion:**  
-`Invoice / policy docs (JSON or PDF) → /chat/ingest or /chat/upload → ChatService → split with RecursiveCharacterTextSplitter → embed with Ollama (mxbai-embed-large) → store vectors in Qdrant (or in‑memory fallback)`
-
-**Query (RAG):**  
-`User → /chat/ask → ChatService → embed question with Ollama → retrieve top‑k from Qdrant (or in‑memory) → RAG chain (createStuffDocumentsChain + ChatOllama) → answer + sources`
+![RAG Data Flow](assets/rag-data-flow.png)
 
 ---
 
