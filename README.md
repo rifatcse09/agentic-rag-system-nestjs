@@ -185,7 +185,9 @@ In a later phase you can switch to a **hybrid setup**:
 
 ## Getting Started (Current MVP)
 
-### 1. Prerequisites
+You can run the app **locally** (Node + Ollama on the host) or **with Docker** (Ollama, Postgres, and API in containers). For Docker, see **[Running with Docker](#running-with-docker)** below.
+
+### 1. Prerequisites (local run)
 
 - **Node.js** `v18+`
 - **Ollama** installed and running.
@@ -210,24 +212,220 @@ pnpm run start:dev  # or npm run start:dev
 
 ---
 
-## API Usage (Concept)
+## Running with Docker
 
-Example of how a client might interact with the agent once the NestJS APIs exist:
+You can run the full stack (Ollama, Postgres, and the NestJS API) with **Docker** and **Docker Compose**. This avoids installing Node, Ollama, or PostgreSQL on your machine and keeps versions consistent across environments.
+
+### Why use Docker / Docker Compose?
+
+- **Single command** – Start Ollama, Postgres, and the RAG API together.
+- **Reproducible** – Same Node, pnpm, and OS layer in the API container; same Ollama and pgvector images everywhere.
+- **Isolated** – No need to install Ollama or Postgres locally; useful for CI or a clean dev machine.
+- **Model pull in Compose** – The `ollama-pull` service can pull the chat and embedding models into the Ollama container so they’re ready for the API.
+
+### What’s in the Compose file
+
+| Service       | Purpose |
+|---------------|---------|
+| **ollama**    | Runs the Ollama server (HTTP on `11434`). Stores models in a volume so they persist. |
+| **ollama-pull** | One-off job: pulls models listed in `OLLAMA_PULL_MODELS` (default: `llama3.2:3b`, `mxbai-embed-large`) into the Ollama service. Run once after `ollama` is up. |
+| **postgres**  | PostgreSQL with pgvector (for future vector DB phase). Used by the API via `DATABASE_URL`. |
+| **api**       | NestJS RAG API (builds from the repo `Dockerfile`). Connects to `ollama` and `postgres` by service name. |
+
+### Prerequisites
+
+- **Docker** and **Docker Compose** (v2).
+- On macOS with **Colima**: ensure the Docker daemon is running (`colima start`). For `llama3.2:3b`, give the VM at least 4 GB RAM:  
+  `colima stop && colima start --memory 4`
+
+### How to run
+
+1. **Start Ollama and Postgres (and the API):**
+
+   ```bash
+   docker compose up -d
+   ```
+
+2. **Pull Ollama models** (first time, or when you add a new model to `OLLAMA_PULL_MODELS`):
+
+   ```bash
+   docker compose run --rm ollama-pull
+   ```
+
+   This uses `OLLAMA_HOST=http://ollama:11434` so models are stored in the `ollama` container. To confirm:
+
+   ```bash
+   docker exec ollama ollama list
+   ```
+
+3. **Use the API** at `http://localhost:3000`:
+   - **Chat (ask):** `POST http://localhost:3000/chat/ask` — send a question, get answer + sources.
+   - Ingest: `POST http://localhost:3000/chat/upload` (PDFs), `POST http://localhost:3000/chat/ingest` (text/PDF paths).
+
+### Environment variables for Docker
+
+Create a `.env` in the project root (see `.env.example`). Compose passes these into the **api** and **ollama-pull** services:
+
+- **API:**  
+  `PORT`, `DATABASE_URL`, `OLLAMA_BASE_URL`, `CHAT_OLLAMA_MODEL`, `EMBEDDINGS_OLLAMA_MODEL`, `RAG_RETRIEVAL_K`, optional `OPENROUTER_API_KEY`, `GEMINI_API_KEY`.
+- **ollama-pull:**  
+  `OLLAMA_PULL_MODELS` – space-separated list (e.g. `llama3.2:3b mxbai-embed-large`). Add or change models here and run `docker compose run --rm ollama-pull` again.
+
+Override the chat or embedding model for the API in `.env`:
+
+```env
+CHAT_OLLAMA_MODEL=llama3.2:3b
+EMBEDDINGS_OLLAMA_MODEL=mxbai-embed-large
+OLLAMA_PULL_MODELS=llama3.2:3b mxbai-embed-large
+```
+
+### Low memory (e.g. “model requires more system memory”)
+
+If the Ollama container has less than ~2.3 GiB free, `llama3.2:3b` may fail to load. You can:
+
+- **Give Ollama more RAM** – e.g. Colima: `colima stop && colima start --memory 4`, then `docker compose up -d`.
+- **Use a smaller chat model** – In `.env` set  
+  `CHAT_OLLAMA_MODEL=tinyllama` and  
+  `OLLAMA_PULL_MODELS=tinyllama mxbai-embed-large`, then run `docker compose run --rm ollama-pull` and restart the stack.
+
+### Rebuild the API image
+
+After changing the app or the Dockerfile:
+
+```bash
+docker compose build api
+docker compose up -d
+```
+
+Or in one step:
+
+```bash
+docker compose up --build -d
+```
+
+---
+
+## API Endpoints (with request body examples)
+
+Base URL: `http://localhost:3000`
+
+---
+
+### 1. Ingest text or PDF paths (JSON)
+
+**`POST /chat/ingest`**
+
+Add raw text and/or paths to existing PDFs into the RAG index. At least one of `docs` or `pdfPaths` must be provided.
+
+**Request:**
 
 ```http
-POST /agent/chat
+POST http://localhost:3000/chat/ingest
 Content-Type: application/json
+```
 
+```json
 {
-  "message": "I need a warm jacket for a ski trip, what's in stock?"
+  "docs": [
+    {
+      "content": "Rifat is a full-stack engineer. Our refund policy allows returns within 30 days.",
+      "meta": { "source": "inline", "category": "policy" }
+    }
+  ],
+  "pdfPaths": [
+    "/absolute/path/to/document.pdf"
+  ]
 }
 ```
 
-Expected behavior:
+- **`docs`** (optional): array of `{ "content": string, "meta"?: object }`.
+- **`pdfPaths`** (optional): array of absolute file paths to PDFs.
 
-- The agent searches the vector DB for relevant product and domain knowledge (e.g. "warm jacket", "ski", "weather", etc.).
-- It calls the **`check_inventory`** tool to verify real-time stock and sizes.
-- It returns a **structured, natural-language response** with product recommendations and availability.
+**Response:** `{ "success": true, "message": "Documents ingested", "chunksAdded": number, "documentsProcessed": number, "pdfsProcessed": number }` or error with `success: false`.
+
+---
+
+### 2. Upload PDFs and ingest (multipart)
+
+**`POST /chat/upload`**
+
+Upload PDF files; they are saved to `./uploads` and automatically ingested.
+
+**Request:**
+
+```http
+POST http://localhost:3000/chat/upload
+Content-Type: multipart/form-data
+```
+
+- **Form field name:** `files` (multiple PDF files allowed, max 10).
+- **Accepted:** `application/pdf` only.
+
+**Example (curl):**
+
+```bash
+curl -X POST http://localhost:3000/chat/upload -F "files=@/path/to/file1.pdf" -F "files=@/path/to/file2.pdf"
+```
+
+**Response:** `{ "success": true, "message": "Documents ingested", "chunksAdded": number, "uploadedFiles": ["file1.pdf", "file2.pdf"] }` or error with `success: false`.
+
+---
+
+### 3. Ask a question (RAG chat)
+
+**`POST /chat/ask`**
+
+Ask a question against the indexed documents. Returns an answer plus source references.
+
+**Request:**
+
+```http
+POST http://localhost:3000/chat/ask
+Content-Type: application/json
+```
+
+```json
+{
+  "question": "Who is Rifat?"
+}
+```
+
+**Response (success):**
+
+```json
+{
+  "success": true,
+  "answer": "Rifat is a full-stack engineer...",
+  "sources": ["/path/to/uploads/files-xxx.pdf"],
+  "contextCount": 8
+}
+```
+
+**Response (no context):** `{ "success": false, "answer": "No indexed content yet...", "sources": [], "contextCount": 0 }`.
+
+---
+
+### 4. Agent chat (orchestrated tools + RAG)
+
+**`POST /agent/chat`**
+
+Higher-level agent endpoint (orchestrates tools and/or RAG). Request body uses `message` and optional `sessionId`.
+
+**Request:**
+
+```http
+POST http://localhost:3000/agent/chat
+Content-Type: application/json
+```
+
+```json
+{
+  "message": "I need a warm jacket for a ski trip, what's in stock?",
+  "sessionId": "optional-session-id"
+}
+```
+
+**Response:** Depends on agent implementation (e.g. `ChatResponseDto` with message and optional tool results).
 
 ---
 
