@@ -33,10 +33,15 @@ export class ChatController implements OnModuleInit {
         },
       }),
       fileFilter: (req, file, callback) => {
-        if (file.mimetype === 'application/pdf') {
+        const allowed = [
+          'application/pdf',
+          'application/msword',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ];
+        if (allowed.includes(file.mimetype) || /\.(pdf|docx?)$/i.test(file.originalname)) {
           callback(null, true);
         } else {
-          callback(new Error('Only pdf files are allowed'), false);
+          callback(new Error('Only PDF and DOC/DOCX files are allowed'), false);
         }
       },
     }),

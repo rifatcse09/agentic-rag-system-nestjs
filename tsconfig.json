@@ -14,12 +14,7 @@
     "skipLibCheck": true,
     "strictNullChecks": true,
     "moduleResolution": "node",
-    "esModuleInterop": true,
-    "paths": {
-      "*": [
-        "node_modules/*"
-      ]
-    }
+    "esModuleInterop": true
   },
   "include": [
     "src/**/*"

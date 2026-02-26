@@ -50,40 +50,44 @@ services:
       - pg_data:/var/lib/postgresql/data
     restart: unless-stopped
 
-  # api:
-  #   build: .
-  #   container_name: rag-api
-  #   ports:
-  #     - "3000:3000"
-  #   environment:
-  #     # App port
-  #     PORT: "3000"
+  api:
+    build: .
+    container_name: rag-api
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      DATABASE_URL: "postgresql://user:password@postgres:5432/agentic_rag?schema=public"
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      CHAT_OLLAMA_MODEL: "${CHAT_OLLAMA_MODEL:-llama3.2:3b}"
+      EMBEDDINGS_OLLAMA_MODEL: "${EMBEDDINGS_OLLAMA_MODEL:-mxbai-embed-large}"
+      RAG_RETRIEVAL_K: "8"
+      QDRANT_URL: "${QDRANT_URL:-http://qdrant:6333}"
+      QDRANT_COLLECTION: "${QDRANT_COLLECTION:-rag_docs}"
+      FRONTEND_URL: "http://localhost:3001"
+      LOG_PRETTY: "${LOG_PRETTY:-1}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+    depends_on:
+      - ollama
+      - postgres
+      - qdrant
+    restart: unless-stopped
 
-  #     # DB (override localhost in .env for containers)
-  #     DATABASE_URL: "postgresql://user:password@postgres:5432/agentic_rag?schema=public"
-
-  #     # Ollama config (override in .env for low-memory: CHAT_OLLAMA_MODEL=tinyllama)
-  #     OLLAMA_BASE_URL: "http://ollama:11434"
-  #     CHAT_OLLAMA_MODEL: "${CHAT_OLLAMA_MODEL:-llama3.2:3b}"
-  #     EMBEDDINGS_OLLAMA_MODEL: "${EMBEDDINGS_OLLAMA_MODEL:-mxbai-embed-large}"
-  #     RAG_RETRIEVAL_K: "8"
-
-  #     # Vector DB: when set, use Qdrant; otherwise in-memory store is used as fallback
-  #     QDRANT_URL: "${QDRANT_URL:-http://qdrant:6333}"
-  #     QDRANT_COLLECTION: "${QDRANT_COLLECTION:-rag_docs}"
-
-  #     # App logs: LOG_PRETTY=1 for readable lines in docker compose logs; unset for JSON
-  #     LOG_PRETTY: "${LOG_PRETTY:-1}"
-
-  #     # Optional (only if still used elsewhere)
-  #     OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
-  #     GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
-
-  #   depends_on:
-  #     - ollama
-  #     - postgres
-  #     - qdrant
-  #   restart: unless-stopped
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: rag-web
+    ports:
+      - "3001:3001"
+    environment:
+      NEXT_PUBLIC_API_URL: "http://localhost:3000"
+      HOSTNAME: "0.0.0.0"
+      PORT: "3001"
+    depends_on:
+      - api
+    restart: unless-stopped
 
 volumes:
   ollama_data:

@@ -116,9 +116,87 @@ From a business / user point of view the current flow is:
 
 ---
 
+## Frontend (Next.js)
+
+The project includes a **Next.js** frontend in the `web/` directory, set up as a **pnpm monorepo workspace**. It provides a clean, white/monochrome UI for uploading documents and chatting with the RAG system.
+
+![Frontend UI](assets/frontend-ui.png)
+
+### Frontend Features
+
+- **Upload page** — Drag-and-drop or browse to upload PDF, DOC, and DOCX files. Shows file list with size, upload progress, and success/error feedback.
+- **Chat page** — Ask questions about uploaded documents. Displays answers with source attribution in a conversational interface.
+- **Monochrome design** — Minimal white theme with neutral tones. No external UI library required.
+
+### Frontend Tech Stack
+
+- **Next.js 15** (App Router, React 19)
+- **Tailwind CSS v4**
+- **TypeScript**
+
+### Running the Frontend
+
+The frontend runs on **port 3001** and calls the NestJS backend on **port 3000**.
+
+```bash
+# Install dependencies (from the project root)
+pnpm install
+
+# Start the frontend dev server
+pnpm web:dev
+```
+
+Or run **both** backend and frontend together:
+
+```bash
+pnpm dev:all
+```
+
+Then open **http://localhost:3001** in your browser.
+
+### Frontend Environment
+
+Create `web/.env.local` (already included) or override:
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:3000
+```
+
+### Frontend Scripts (from root)
+
+| Script | Description |
+|--------|-------------|
+| `pnpm web:dev` | Start Next.js dev server on port 3001 |
+| `pnpm web:build` | Production build |
+| `pnpm web:start` | Start production server |
+| `pnpm dev:all` | Start backend + frontend together |
+
+### Project Structure
+
+```
+agentic-rag-system-nestjs/
+├── src/                    # NestJS backend
+│   ├── chat/               # Chat RAG module (upload, ingest, ask)
+│   ├── agent/              # Agent orchestration module
+│   └── ...
+├── web/                    # Next.js frontend
+│   ├── src/
+│   │   ├── app/            # App Router pages (/, /chat)
+│   │   ├── components/     # FileUpload, ChatInterface
+│   │   └── lib/            # API client (api.ts)
+│   ├── package.json
+│   └── tsconfig.json
+├── pnpm-workspace.yaml     # Monorepo workspace config
+├── docker-compose.yml
+└── package.json            # Root (NestJS + workspace scripts)
+```
+
+---
+
 ## Tech Stack (Current MVP)
 
 - **Backend Framework**: NestJS.
+- **Frontend**: Next.js 15 (App Router) with Tailwind CSS v4, running as a pnpm workspace.
 - **AI Orchestration**: `langchain`, `@langchain/core`.
 - **LLM & Embeddings**: Ollama (`ChatOllama`, `OllamaEmbeddings`).
 - **Vector Store**:
@@ -183,14 +261,29 @@ You can run the app **locally** (Node + Ollama on the host) or **with Docker** (
 ### 2. Installation
 
 ```bash
-pnpm install        # or npm install / yarn
+pnpm install        # installs both backend and frontend (monorepo)
 cp .env.example .env
-pnpm run start:dev  # or npm run start:dev
 ```
 
-### 3. Key Environment Variables
+### 3. Start the application
+
+```bash
+# Backend only (NestJS on port 3000)
+pnpm run start:dev
+
+# Frontend only (Next.js on port 3001)
+pnpm web:dev
+
+# Both together
+pnpm dev:all
+```
+
+Then open **http://localhost:3001** for the frontend UI, or call the API directly at **http://localhost:3000**.
+
+### 4. Key Environment Variables
 
 - `PORT` – API port (default `3000`).
+- `FRONTEND_URL` – Frontend origin for CORS (default `http://localhost:3001`).
 - `OLLAMA_BASE_URL` – e.g. `http://localhost:11434`.
 - `CHAT_OLLAMA_MODEL` – e.g. `llama3.2:3b`.
 - `EMBEDDINGS_OLLAMA_MODEL` – e.g. `mxbai-embed-large`.
