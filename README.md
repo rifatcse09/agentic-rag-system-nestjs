@@ -131,26 +131,15 @@ From a business / user point of view the current flow is:
 
 ---
 
-## High-Level Data Flow (Conceptual Future Design)
+## High‑Level Data Flow (Current MVP)
 
-Conceptual flow of a user query through the full Agentic RAG system:
+Single‑line view of what is implemented **right now**:
 
-```mermaid
-graph TD
-    A[User Query] --> B{AI Router}
-    B -- Needs Knowledge --> C[RAG Service: pgvector Search]
-    B -- Needs Action --> D[Tool Service: SQL/API Call]
-    C --> E[Context Synthesis]
-    D --> E
-    E --> F[Self-Correction & Guardrails]
-    F --> G[Structured Response]
-```
+**Ingestion:**  
+`Invoice / policy docs (JSON or PDF) → /chat/ingest or /chat/upload → ChatService → split with RecursiveCharacterTextSplitter → embed with Ollama (mxbai-embed-large) → store vectors in Qdrant (or in‑memory fallback)`
 
-- **AI Router**: Decides whether to use RAG, tools, or both.
-- **RAG Service**: Retrieves relevant context from the vector store.
-- **Tool Service**: Executes business actions (inventory, tickets, CRM).
-- **Self-Correction & Guardrails**: Validates and adjusts responses.
-- **Structured Response**: Returns a safe, useful answer to the caller.
+**Query (RAG):**  
+`User → /chat/ask → ChatService → embed question with Ollama → retrieve top‑k from Qdrant (or in‑memory) → RAG chain (createStuffDocumentsChain + ChatOllama) → answer + sources`
 
 ---
 
